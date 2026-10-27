@@ -1,0 +1,23 @@
+diff --git a/firmware/main/app_main.cpp b/firmware/main/app_main.cpp
+index 59e02e6..29a3f9c 100644
+--- a/firmware/main/app_main.cpp
++++ b/firmware/main/app_main.cpp
+@@ -2529,7 +2529,17 @@ void handle_input_event(const easy_input::InputEvent& event, void* context) {
+     return;
+   }
+ 
+-  if (is_codex_slot_input(event.input)) {
++  // KEY1..KEY8 只有在这块板子真的接上了 Codex 语音路由时，才归语音槽位状态机。
++  //
++  // 路由不存在时（纯键盘场景：没配 Wi-Fi、没有 audio host，route generation 恒为 0），
++  // CodexSlotState::handle_input 对每一个按下的键只会回一个 RejectedBusy —— 不发声、
++  // 不发键码，然后把事件吞掉。调用点原本是无条件 return 的，结果就是键位表里的
++  // KEY1 形同虚设：灯会亮（那是按键反馈灯的原始边沿），但一个 HID 报文都发不出去。
++  //
++  // 所以这里先看路由：路由在就交给槽位机，路由不在就继续往下走键位表。
++  const bool codex_owns_keys =
++      app->codex_route_generation != 0 || app->codex_slots.capture_active();
++  if (is_codex_slot_input(event.input) && codex_owns_keys) {
+     handle_codex_slot_transition(
+         app,
+         app->codex_slots.handle_input(

@@ -1,0 +1,20 @@
+{
+  "id": "slides",
+  "name": "讲课演示",
+  "note": "站在投影前用：翻页、黑屏、全屏都不必回电脑找鼠标。热键语法与固件 hid_keycode 解析一致。",
+  "keys": {
+    "KEY1": "voice_ptt_hold",
+    "KEY2": "hotkey:right",
+    "KEY3": "hotkey:left",
+    "KEY4": "hotkey:b",
+    "KEY5": "hotkey:cmd+ctrl+f",
+    "KEY6": "hotkey:escape",
+    "KEY7": "hotkey:space",
+    "KEY8": "hotkey:cmd+shift+h"
+  },
+  "encoder": {
+    "left": "hotkey:left",
+    "right": "hotkey:right",
+    "press": "hotkey:b"
+  }
+}

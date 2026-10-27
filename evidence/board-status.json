@@ -1,0 +1,21 @@
+{
+  "battery_mv": 4209,
+  "battery_percent": 100,
+  "bytes": 627,
+  "capabilities": {
+    "config_max_bytes": 2048,
+    "offline_platform_switch": true,
+    "semantic_actions": true,
+    "usb_management_v1": true
+  },
+  "crc16": 822,
+  "edit_ptt_hotkey": "RightOption",
+  "firmware": "0.6.2-easy-codex-board-volume",
+  "hotkey_mode": "hold",
+  "phase": "status",
+  "ptt_hotkey": "RightMeta",
+  "saved": true,
+  "schema": "ai_keyboard.config_status.v1",
+  "status": "cached",
+  "target_platform": "macos"
+}

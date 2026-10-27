@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>摩斯电码练习机 · EasyInput</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1a1d26; --panel2:#222633; --line:#2e3342;
+    --ink:#e9ecf2; --ink2:#a2aab9; --ink3:#6b7484;
+    --amber:#ffb84d; --amber-dim:#8a6528;
+    --ok:#4ade80; --bad:#f87171;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:radial-gradient(1200px 600px at 50% -10%,#1d2230 0%,var(--bg) 60%);
+    color:var(--ink); font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; padding:28px 20px 60px;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;
+         border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:24px}
+  h1{font-size:21px;margin:0;font-weight:650;letter-spacing:-.01em}
+  h1 span{font-size:13px;color:var(--ink3);font-weight:400;margin-left:10px;letter-spacing:0}
+  .status{font-size:12.5px;color:var(--ink3);display:flex;align-items:center;gap:7px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--ink3);transition:.2s}
+  .dot.live{background:var(--ok);box-shadow:0 0 10px rgba(74,222,128,.7)}
+
+  /* 主显示区 */
+  .screen{
+    background:linear-gradient(180deg,var(--panel) 0%,#161922 100%);
+    border:1px solid var(--line);border-radius:14px;padding:26px 24px;
+    position:relative;overflow:hidden;transition:box-shadow .12s, border-color .12s;
+  }
+  .screen.active{border-color:var(--amber-dim);box-shadow:0 0 0 1px var(--amber-dim),0 0 40px rgba(255,184,77,.13) inset}
+  .label{font-size:11.5px;letter-spacing:.16em;color:var(--ink3);text-transform:uppercase;margin-bottom:6px}
+  .row{display:flex;gap:26px;flex-wrap:wrap;margin-bottom:22px}
+  .row>div{flex:1 1 220px;min-width:0}
+
+  /* 实时符号 */
+  .symbols{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:34px;line-height:1.25;
+    letter-spacing:.14em;color:var(--amber);min-height:46px;word-break:break-all;
+    text-shadow:0 0 18px rgba(255,184,77,.35);
+  }
+  .symbols .cursor{opacity:.45}
+
+  /* 解码文本 */
+  .decoded{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:26px;line-height:1.4;
+    letter-spacing:.06em;min-height:40px;word-break:break-all;
+  }
+  .decoded .pending{color:var(--amber)}
+  .decoded .ok{color:var(--ok)}
+  .decoded .bad{color:var(--bad);text-decoration:underline wavy rgba(248,113,113,.6)}
+
+  /* 目标 */
+  .target{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .target .word{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:30px;letter-spacing:.3em;color:var(--ink)}
+  .target .hint{font-size:13px;color:var(--ink3)}
+  .score{margin-left:auto;font-size:13px;color:var(--ink2)}
+  .score b{color:var(--amber);font-size:19px;font-weight:650;margin:0 2px}
+
+  /* 光条 */
+  .bar{height:3px;background:var(--line);border-radius:2px;margin-top:18px;overflow:hidden}
+  .bar i{display:block;height:100%;width:0;background:var(--amber);transition:width .3s}
+
+  /* 控制区 */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-top:18px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px 22px}
+  .field label{display:block;font-size:12px;color:var(--ink3);margin-bottom:6px}
+  .field .val{float:right;color:var(--amber);font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%;accent-color:var(--amber);margin:0}
+  .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+  button{
+    background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;
+    padding:9px 15px;font-size:13.5px;cursor:pointer;transition:.15s;font-family:inherit;
+  }
+  button:hover{border-color:var(--amber-dim);color:var(--amber)}
+  button.primary{background:var(--amber);color:#20160a;border-color:var(--amber);font-weight:600}
+  button.primary:hover{background:#ffc76e;color:#20160a}
+
+  /* 键位提示 */
+  .keys{align-items:center;display:flex;gap:22px;flex-wrap:wrap;margin-top:16px;font-size:13px;color:var(--ink2)}
+  .keycap{
+    display:inline-block;min-width:26px;text-align:center;padding:3px 8px;margin:0 4px 0 0;
+    border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;
+    background:var(--panel2);font-family:"SF Mono",Menlo,monospace;font-size:12px;color:var(--ink)
+  }
+  .keycap.on{background:var(--amber);color:#20160a;border-color:var(--amber)}
+
+  /* 参考表 */
+  details{margin-top:18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px}
+  summary{cursor:pointer;font-size:13.5px;color:var(--ink2);outline:none}
+  .chart{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px 14px;margin-top:14px;
+         font-family:"SF Mono",Menlo,monospace;font-size:12.5px}
+  .chart div{display:flex;justify-content:space-between;color:var(--ink2);padding:2px 0}
+  .chart b{color:var(--amber);font-weight:600}
+  .chart .hit b{color:var(--ok)}
+
+  footer{margin-top:26px;font-size:12px;color:var(--ink3);text-align:center;line-height:1.8}
+  kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px;
+      font-family:"SF Mono",Menlo,monospace;font-size:11.5px;color:var(--ink2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>摩斯电码练习机<span>EasyInput V2.0 · 板子当发报键</span></h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">等待第一次按键…</span></div>
+</header>
+
+<!-- 主显示 -->
+<div class="screen" id="screen">
+  <div class="row">
+    <div>
+      <div class="label">当前输入</div>
+      <div class="symbols" id="symbols"><span class="cursor">—</span></div>
+    </div>
+    <div>
+      <div class="label">已解出</div>
+      <div class="decoded" id="decoded"><span style="color:var(--ink3)">（还没开始）</span></div>
+    </div>
+  </div>
+
+  <div class="label">练习目标</div>
+  <div class="target">
+    <div class="word" id="targetWord">SOS</div>
+    <div class="hint" id="targetHint">按住发报键：短的是一点，长的是一划</div>
+    <div class="score">得分 <b id="score">0</b> ／ 连对 <b id="streak">0</b></div>
+  </div>
+
+  <div class="bar"><i id="progress"></i></div>
+</div>
+
+<!-- 参数 -->
+<div class="panel">
+  <div class="grid">
+    <div class="field">
+      <label>点划阈值 <span class="val" id="vDot">200 ms</span></label>
+      <input type="range" id="dotMax" min="80" max="400" step="10" value="200">
+    </div>
+    <div class="field">
+      <label>字母间隔 <span class="val" id="vLetter">600 ms</span></label>
+      <input type="range" id="letterGap" min="200" max="1600" step="50" value="600">
+    </div>
+    <div class="field">
+      <label>词间隔 <span class="val" id="vWord">1600 ms</span></label>
+      <input type="range" id="wordGap" min="600" max="3000" step="100" value="1600">
+    </div>
+    <div class="field">
+      <label>提示音音量 <span class="val" id="vVol">35%</span></label>
+      <input type="range" id="vol" min="0" max="100" step="5" value="35">
+    </div>
+  </div>
+
+  <div class="btns">
+    <button class="primary" id="btnNext">换一个词</button>
+    <button id="btnClear">清空</button>
+    <button id="btnRebind">重设发报键</button>
+    <button id="btnCalibrate">自动校准</button>
+  </div>
+
+  <div class="keys">
+    <span>发报键 <span class="keycap" id="capSend">Space</span></span>
+    <span>删字 <span class="keycap" id="capDel">Backspace</span></span>
+    <span>换词 <span class="keycap" id="capNext">Tab</span></span>
+    <span>提交 <span class="keycap" id="capSubmit">Enter</span></span>
+  </div>
+</div>
+
+<!-- 参考表 -->
+<details id="chartBox">
+  <summary>摩斯对照表（按到的字母会变绿）</summary>
+  <div class="chart" id="chart"></div>
+</details>
+
+<footer>
+  发报键按住不放：约 1 单位 = 一点（·），3 单位 = 一划（—）。<br>
+  松开后停顿超过「字母间隔」自动断字，超过「词间隔」自动空格。<br>
+  校准：敲 5 次你认为的「点」，程序会把阈值定在你实际手法上。
+</footer>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------- 摩斯表 ---------- */
+  const MORSE = {
+    '.-':'A','-...':'B','-.-.':'C','-..':'D','.':'E','..-.':'F','--.':'G','....':'H',
+    '..':'I','.---':'J','-.-':'K','.-..':'L','--':'M','-.':'N','---':'O','.--.':'P',
+    '--.-':'Q','.-.':'R','...':'S','-':'T','..-':'U','...-':'V','.--':'W','-..-':'X',
+    '-.--':'Y','--..':'Z',
+    '-----':'0','.----':'1','..---':'2','...--':'3','....-':'4','.....':'5',
+    '-....':'6','--...':'7','---..':'8','----.':'9',
+    '.-.-.-':'.','--..--':',','..--..':'?','-.-.--':'!','-..-.':'/','-....-':'-',
+    '-.--.':'(','-.--.-':')','.-...':'&','---...':':','-.-.-.':';','-...-':'='
+  };
+  const CHAR2MORSE = {};
+  Object.keys(MORSE).forEach(k => { if(!CHAR2MORSE[MORSE[k]]) CHAR2MORSE[MORSE[k]] = k; });
+
+  /* ---------- 状态 ---------- */
+  const S = {
+    dotMax: 200, letterGap: 600, wordGap: 1600, vol: 0.35,
+    seq: '',            // 当前正在组的点划串
+    text: '',           // 已经解出的文本（用户敲出来的）
+    target: '',
+    score: 0, streak: 0,
+    pressing: false, pressStart: 0,
+    letterTimer: null, wordTimer: null,
+    sendKey: ' ',       // 发报键（KeyboardEvent.key 值）
+    rebinding: false,
+    calibrating: false, calSamples: [], calCount: 0, calKey: '',
+    awardedFor: ''      // 已给过分的词，防重复加分
+  };
+
+  const WORDS = ['SOS','HELLO','MORSE','CQ','TEST','OK','73','HAM','READY','CODE',
+                 'KEY','DOOR','OPEN','LIGHT','GOOD','NICE','WORK','PLAY','SONG','WAVE'];
+
+  /* ---------- DOM ---------- */
+  const $ = id => document.getElementById(id);
+  const el = {
+    screen:$('screen'), symbols:$('symbols'), decoded:$('decoded'),
+    targetWord:$('targetWord'), targetHint:$('targetHint'),
+    score:$('score'), streak:$('streak'), progress:$('progress'),
+    dot:$('dot'), statusText:$('statusText'),
+    vDot:$('vDot'), vLetter:$('vLetter'), vWord:$('vWord'), vVol:$('vVol'),
+    dotMax:$('dotMax'), letterGap:$('letterGap'), wordGap:$('wordGap'), vol:$('vol'),
+    capSend:$('capSend'), capDel:$('capDel'), capNext:$('capNext'), capSubmit:$('capSubmit'),
+    chart:$('chart'), chartBox:$('chartBox')
+  };
+
+  /* ---------- 音频 ---------- */
+  let audioCtx = null, osc = null, gain = null;
+  function ensureAudio(){
+    if(audioCtx) return;
+    try{
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      gain = audioCtx.createGain();
+      gain.gain.value = 0;
+      gain.connect(audioCtx.destination);
+    }catch(e){ audioCtx = null; }
+  }
+  function toneOn(){
+    if(!audioCtx || S.vol <= 0) return;
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    if(osc) return;
+    osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 620;
+    osc.connect(gain);
+    gain.gain.cancelScheduledValues(audioCtx.currentTime);
+    gain.gain.setTargetAtTime(S.vol, audioCtx.currentTime, 0.006);
+    osc.start();
+  }
+  function toneOff(){
+    if(!osc) return;
+    const o = osc; osc = null;
+    gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.008);
+    setTimeout(()=>{ try{ o.stop(); o.disconnect(); }catch(e){} }, 60);
+  }
+  function blip(freq, dur){
+    if(!audioCtx || S.vol<=0) return;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type='sine'; o.frequency.value=freq;
+    g.gain.value=0; o.connect(g); g.connect(audioCtx.destination);
+    const t = audioCtx.currentTime;
+    g.gain.setTargetAtTime(S.vol*0.7, t, 0.005);
+    g.gain.setTargetAtTime(0, t+dur, 0.01);
+    o.start(t); o.stop(t+dur+0.08);
+  }
+
+  /* ---------- 渲染 ---------- */
+  function showSymbols(){
+    const dots = S.seq.replace(/\./g,'·').replace(/-/g,'—');
+    el.symbols.innerHTML = dots
+      ? dots + '<span class="cursor">▌</span>'
+      : '<span class="cursor">按住发报键</span>';
+  }
+
+  function showDecoded(){
+    const out = [];
+    const tgt = S.target;
+    for(let i=0;i<S.text.length;i++){
+      const ch = S.text[i];
+      let cls = '';
+      if(i < tgt.length && ch.toUpperCase() !== tgt[i].toUpperCase()) cls = 'bad';
+      else if(i < tgt.length) cls = 'ok';
+      out.push('<span class="'+cls+'">'+(ch===' '?'␣':ch)+'</span>');
+    }
+    if(S.seq) out.push('<span class="pending">'+S.seq.replace(/\./g,'·').replace(/-/g,'—')+'</span>');
+    el.decoded.innerHTML = out.length ? out.join('') : '<span style="color:var(--ink3)">（还没开始）</span>';
+
+    // 进度与得分
+    let correct = 0;
+    for(let i=0;i<Math.min(S.text.length, tgt.length);i++){
+      if(S.text[i].toUpperCase() === tgt[i].toUpperCase()) correct++; else break;
+    }
+    el.progress.style.width = tgt.length ? (correct/tgt.length*100)+'%' : '0%';
+    el.score.textContent = S.score;
+    el.streak.textContent = S.streak;
+  }
+
+  function buildChart(){
+    const order = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    el.chart.innerHTML = order.split('').map(c=>{
+      const code = CHAR2MORSE[c] || '';
+      return '<div data-c="'+c+'"><span>'+c+'</span><b>'+code.replace(/\./g,'·').replace(/-/g,'—')+'</b></div>';
+    }).join('');
+  }
+  function markChart(ch){
+    const node = el.chart.querySelector('[data-c="'+ch+'"]');
+    if(node){ node.classList.add('hit'); setTimeout(()=>node.classList.remove('hit'), 900); }
+  }
+
+  /* ---------- 核心：断字 / 断词 ---------- */
+  function commitLetter(){
+    if(!S.seq) return;
+    const ch = MORSE[S.seq] || '?';
+    S.text += ch;
+    S.seq = '';
+    showSymbols();
+    markChart(ch);
+    checkLetter(ch, S.text.length - 1);
+    showDecoded();      // 先判后渲染，错字当场变红、连对当场清零
+    checkWord();
+  }
+
+  function commitWord(){
+    if(!S.text || S.text.endsWith(' ')) return;
+    S.text += ' ';
+    showDecoded();
+  }
+
+  function armTimers(){
+    clearTimeout(S.letterTimer); clearTimeout(S.wordTimer);
+    S.letterTimer = setTimeout(function(){
+      commitLetter();
+      const rest = Math.max(150, S.wordGap - S.letterGap);
+      S.wordTimer = setTimeout(commitWord, rest);
+    }, S.letterGap);
+  }
+
+  /* ---------- 判定 ---------- */
+  // 每提交一个字母立刻判对错，不等整词敲完
+  function checkLetter(ch, idx){
+    const tgt = S.target.toUpperCase();
+    if(idx >= tgt.length) return;
+    if(ch.toUpperCase() === tgt[idx]){
+      if(idx + 1 < tgt.length){
+        el.targetHint.textContent = '对 ' + (idx + 1) + ' / ' + tgt.length + '，继续';
+        el.targetHint.style.color = 'var(--ink3)';
+      }
+      return;
+    }
+    // 错字：立刻给反馈
+    S.streak = 0;
+    blip(170, .20);
+    const want = tgt[idx];
+    const code = (CHAR2MORSE[want] || '').replace(/\./g, '·').replace(/-/g, '—');
+    el.targetHint.textContent = '第 ' + (idx + 1) + ' 个不对，应该是 ' + want + '（' + code + '）';
+    el.targetHint.style.color = 'var(--bad)';
+    el.screen.classList.remove('active');
+  }
+
+  function checkWord(){
+    const tgt = S.target.toUpperCase();
+    const got = S.text.toUpperCase();
+    if(got.length < tgt.length) return;
+    if(got.slice(0, tgt.length) !== tgt) return;
+    if(S.awardedFor === S.target) return;   // 防重复加分
+    S.awardedFor = S.target;
+    S.score += tgt.length * 2 + S.streak;
+    S.streak += 1;
+    blip(880, .10); setTimeout(()=>blip(1180,.12), 130);
+    el.targetHint.textContent = '✓ 正确！连对 ' + S.streak + ' 次';
+    el.targetHint.style.color = 'var(--ok)';
+    el.progress.style.width = '100%';
+    showDecoded();
+    setTimeout(nextWord, 1600);   // 留够时间看清自己敲的
+  }
+
+  function nextWord(){
+    let w, guard = 0;
+    do { w = WORDS[Math.floor(Math.random()*WORDS.length)]; guard++; } while(w === S.target && guard < 50);
+    S.target = w;
+    S.awardedFor = '';
+    S.text = '';
+    S.seq = '';
+    el.targetWord.textContent = w;
+    el.targetHint.textContent = '按住发报键：短的是一点，长的是一划';
+    el.targetHint.style.color = '';
+    showSymbols(); showDecoded();
+  }
+
+  /* ---------- 按键处理 ---------- */
+  const MODIFIER_ONLY = ['Shift','Control','Alt','Meta','CapsLock','Escape'];
+
+  function onDown(e){
+    if(e.repeat) return;
+
+    // 校准模式：连收 5 个样本
+    if(S.calibrating){
+      if(!S.pressing){ S.pressing = true; S.pressStart = performance.now();
+        el.screen.classList.add('active'); S.calKey = e.key; }
+      e.preventDefault(); return;
+    }
+
+    // 重设发报键
+    if(S.rebinding){
+      S.sendKey = e.key;
+      S.rebinding = false;
+      el.capSend.textContent = keyName(e.key);
+      el.statusText.textContent = '发报键已设为 ' + keyName(e.key);
+      e.preventDefault(); return;
+    }
+
+    // 功能键
+    if(e.key === 'Backspace'){
+      e.preventDefault();
+      if(S.seq){ S.seq = S.seq.slice(0,-1); }
+      else if(S.text){ S.text = S.text.slice(0,-1); }
+      showSymbols(); showDecoded();
+      return;
+    }
+    if(e.key === 'Tab'){
+      e.preventDefault(); nextWord(); return;
+    }
+    if(e.key === 'Enter'){
+      e.preventDefault(); clearTimeout(S.letterTimer); clearTimeout(S.wordTimer);
+      commitLetter(); showDecoded(); return;
+    }
+
+    // 发报键
+    if(e.key !== S.sendKey) return;
+    e.preventDefault();
+    ensureAudio();
+    if(S.pressing) return;
+    S.pressing = true;
+    S.pressStart = performance.now();
+    clearTimeout(S.letterTimer); clearTimeout(S.wordTimer);
+    el.screen.classList.add('active');
+    el.capSend.classList.add('on');
+    el.dot.classList.add('live');
+    el.statusText.textContent = '发送中…';
+    toneOn();
+  }
+
+  function onUp(e){
+    if(!S.pressing) return;
+    if(e && e.key !== S.sendKey && !S.calibrating) return;
+    const held = performance.now() - S.pressStart;
+    S.pressing = false;
+    el.screen.classList.remove('active');
+    el.capSend.classList.remove('on');
+    el.dot.classList.remove('live');
+    el.statusText.textContent = '已就绪 · 板子已连接';
+    toneOff();
+
+    if(S.calibrating){
+      S.calSamples.push(held);
+      S.calCount = (S.calCount||0) + 1;
+      el.statusText.textContent = '校准中 ' + S.calCount + '/5（敲你认为的「点」）';
+      if(S.calCount >= 5){
+        const avg = S.calSamples.reduce((a,b)=>a+b,0)/S.calSamples.length;
+        S.dotMax = Math.round(Math.min(400, Math.max(80, avg * 2.2)));
+        el.dotMax.value = S.dotMax; el.vDot.textContent = S.dotMax + ' ms';
+        S.calibrating = false; S.calSamples = []; S.calCount = 0;
+        el.statusText.textContent = '校准完成：阈值 ' + S.dotMax + ' ms';
+        blip(760,.1); setTimeout(()=>blip(1020,.1), 120);
+      }
+      return;
+    }
+
+    S.seq += held >= S.dotMax ? '-' : '.';
+    showSymbols(); showDecoded();
+    armTimers();
+  }
+
+  function keyName(k){
+    const map = { ' ':'Space', 'Tab':'Tab', 'Enter':'Enter', 'Backspace':'Backspace',
+                  'Shift':'Shift', 'Control':'Control', 'Alt':'Option', 'Meta':'Command' };
+    return map[k] || (k.length === 1 ? k.toUpperCase() : k);
+  }
+
+  /* ---------- 绑定 ---------- */
+  document.addEventListener('keydown', onDown, {capture:true});
+  document.addEventListener('keyup', onUp, {capture:true});
+  window.addEventListener('blur', ()=>{ if(S.pressing) onUp(null); });
+
+  el.dotMax.addEventListener('input', e=>{ S.dotMax = +e.target.value; el.vDot.textContent = S.dotMax+' ms'; });
+  el.letterGap.addEventListener('input', e=>{ S.letterGap = +e.target.value; el.vLetter.textContent = S.letterGap+' ms'; });
+  el.wordGap.addEventListener('input', e=>{ S.wordGap = +e.target.value; el.vWord.textContent = S.wordGap+' ms'; });
+  el.vol.addEventListener('input', e=>{ S.vol = +e.target.value/100; el.vVol.textContent = e.target.value+'%'; });
+
+  $('btnNext').addEventListener('click', nextWord);
+  $('btnClear').addEventListener('click', ()=>{ S.text=''; S.seq=''; showSymbols(); showDecoded(); });
+  $('btnRebind').addEventListener('click', ()=>{
+    S.rebinding = true;
+    el.statusText.textContent = '请按一下要当发报键的那个键…';
+  });
+  $('btnCalibrate').addEventListener('click', ()=>{
+    S.calibrating = true; S.calSamples = []; S.calCount = 0;
+    el.statusText.textContent = '校准中 0/5（敲你认为的「点」）';
+  });
+
+  /* ---------- 启动 ---------- */
+  buildChart();
+  S.target = 'SOS';
+  el.targetWord.textContent = S.target;
+  showSymbols(); showDecoded();
+
+  // 一次性欢迎：提示板子
+  setTimeout(()=>{
+    el.statusText.textContent = '等待第一次按键…';
+  }, 300);
+})();
+</script>
+</body>
+</html>

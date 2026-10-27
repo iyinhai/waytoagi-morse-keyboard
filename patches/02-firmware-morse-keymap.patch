@@ -1,0 +1,66 @@
+diff --git a/firmware/components/keyboard/include/keyboard/keymap.h b/firmware/components/keyboard/include/keyboard/keymap.h
+index 19d90a2..03dc2db 100644
+--- a/firmware/components/keyboard/include/keyboard/keymap.h
++++ b/firmware/components/keyboard/include/keyboard/keymap.h
+@@ -106,6 +106,16 @@ struct HardwareCapabilities {
+   AudioTransport audio_transport = AudioTransport::Unavailable;
+ };
+ 
++// 课程原始的出厂键位（语音键 + 语义快捷键）。保留下来，方便对照与回退。
++Keymap UpstreamDefaultKeymap();
++
++// 摩斯电码练习机键位：
++//   KEY1 按住发报（空格）、KEY3 换词（Tab）、KEY4 删字（Backspace）、KEY5 提交（Enter）
++//   其余键与旋钮一律关闭，避免练习时误触。
++Keymap MorseKeymap();
++
++// 固件实际使用的出厂键位。这块板子被改造成了摩斯电码练习机，
++// 所以返回的是 MorseKeymap()；NVS 里没有配置时就走它。
+ Keymap DefaultKeymap();
+ FirmwareEvent event_for_action(const Action& action,
+                                InputPhase phase,
+diff --git a/firmware/components/keyboard/src/keymap.cpp b/firmware/components/keyboard/src/keymap.cpp
+index d25fa3b..7ea3933 100644
+--- a/firmware/components/keyboard/src/keymap.cpp
++++ b/firmware/components/keyboard/src/keymap.cpp
+@@ -25,7 +25,7 @@ const Action& Keymap::action_for(InputId input) const {
+   return actions_.at(index_of(input));
+ }
+ 
+-Keymap DefaultKeymap() {
++Keymap UpstreamDefaultKeymap() {
+   std::array<Action, static_cast<std::size_t>(InputId::Count)> actions{};
+   actions[index_of(InputId::Key1)] = {ActionKind::VoicePttHold, ""};
+   actions[index_of(InputId::Key2)] = {ActionKind::Hotkey, "Return"};
+@@ -41,6 +41,31 @@ Keymap DefaultKeymap() {
+   return Keymap(actions);
+ }
+ 
++Keymap MorseKeymap() {
++  std::array<Action, static_cast<std::size_t>(InputId::Count)> actions{};
++  // 发报键。空格在 HID 里是 0x2C，按下/松开的时间差就是点和划的时长。
++  actions[index_of(InputId::Key1)] = {ActionKind::Hotkey, "Space"};
++  // KEY2 空出来，避免练习时手滑打出一个回车。
++  actions[index_of(InputId::Key2)] = {ActionKind::Disabled, ""};
++  actions[index_of(InputId::Key3)] = {ActionKind::Hotkey, "Tab"};
++  actions[index_of(InputId::Key4)] = {ActionKind::Hotkey, "Backspace"};
++  actions[index_of(InputId::Key5)] = {ActionKind::Hotkey, "Enter"};
++  actions[index_of(InputId::Key6)] = {ActionKind::Disabled, ""};
++  actions[index_of(InputId::Key7)] = {ActionKind::Disabled, ""};
++  actions[index_of(InputId::Key8)] = {ActionKind::Disabled, ""};
++  // 旋钮三向全关：摩斯练习用不到，开着反而容易误触。
++  actions[index_of(InputId::EncoderLeft)] = {ActionKind::Disabled, ""};
++  actions[index_of(InputId::EncoderRight)] = {ActionKind::Disabled, ""};
++  actions[index_of(InputId::EncoderPress)] = {ActionKind::Disabled, ""};
++  return Keymap(actions);
++}
++
++Keymap DefaultKeymap() {
++  // 这块板子的出厂键位就是摩斯键位。要回课程的原始键位，
++  // 把这里改成 `return UpstreamDefaultKeymap();` 重新编译即可。
++  return MorseKeymap();
++}
++
+ FirmwareEvent event_for_action(const Action& action,
+                                InputPhase phase,
+                                const std::string& ptt_hotkey,

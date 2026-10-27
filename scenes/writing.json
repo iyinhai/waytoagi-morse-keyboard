@@ -1,0 +1,20 @@
+{
+  "id": "writing",
+  "name": "公众号写作",
+  "note": "写稿时手不离键盘：说话成文、一键贴回上一轮结论、三个常用小标题、剩下的交给编辑动作。",
+  "keys": {
+    "KEY1": "voice_ptt_hold",
+    "KEY2": "edit_ptt_hold",
+    "KEY3": "paste_last",
+    "KEY4": { "text": "【结论】" },
+    "KEY5": { "text": "【证据】" },
+    "KEY6": { "text": "【待补】" },
+    "KEY7": "copy",
+    "KEY8": "undo"
+  },
+  "encoder": {
+    "left": "disabled",
+    "right": "disabled",
+    "press": "scroll_axis_toggle"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "factory",
+  "name": "出厂键位",
+  "note": "与固件 DefaultKeymap() 一致。任何时候觉得键位乱了，下发这一份即可恢复。",
+  "keys": {
+    "KEY1": "voice_ptt_hold",
+    "KEY2": "hotkey:return",
+    "KEY3": "edit_ptt_hold",
+    "KEY4": "hotkey:backspace",
+    "KEY5": "select_all",
+    "KEY6": "copy",
+    "KEY7": "paste",
+    "KEY8": "undo"
+  },
+  "encoder": {
+    "left": "disabled",
+    "right": "disabled",
+    "press": "scroll_axis_toggle"
+  }
+}

@@ -1,0 +1,885 @@
+diff --git a/app/host/src/main.rs b/app/host/src/main.rs
+index 8b00e78..6e0baeb 100644
+--- a/app/host/src/main.rs
++++ b/app/host/src/main.rs
+@@ -15,7 +15,9 @@ use easy_codex_host::launch_agent::{
+     DeploymentMode, deploy_current_executable, is_loaded, uninstall,
+ };
+ use easy_codex_host::paths::AppPaths;
+-use easy_codex_host::provisioning::{LanProvisioning, load_or_create_device_secret, provision_lan};
++use easy_codex_host::provisioning::{
++    LanProvisioning, Scene, load_or_create_device_secret, provision_lan,
++};
+ #[cfg(target_os = "macos")]
+ use easy_codex_host::secrets::MacKeychainStore;
+ #[cfg(target_os = "macos")]
+@@ -62,18 +64,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+                 return bind_slot(slot, &task_id);
+             }
+             "provision-lan" => {
+-                let ssid = arguments.next().ok_or("missing Wi-Fi SSID")?;
+-                let host = arguments
++                // 用法：provision-lan [--scene <名字>] [--preview] [--offline] <SSID> <MacIP> [端口]
++                // --preview 只打印将要下发的配置，不碰板子。
++                // --offline 只下发键位，不写 Wi-Fi/语音端点（纯键盘场景用，免输密码）。
++                let mut scene_name: Option<String> = None;
++                let mut preview_only = false;
++                let mut offline = false;
++                let mut positional: Vec<String> = Vec::new();
++                while let Some(value) = arguments.next() {
++                    match value.as_str() {
++                        "--scene" => {
++                            scene_name = Some(arguments.next().ok_or("missing scene name")?);
++                        }
++                        "--preview" => preview_only = true,
++                        "--offline" => offline = true,
++                        other => positional.push(other.to_string()),
++                    }
++                }
++                if offline {
++                    if let Some(extra) = positional.first() {
++                        return Err(format!("--offline 不接受位置参数，多余的参数是：{extra}").into());
++                    }
++                    return provision_keyboard_offline(scene_name, preview_only);
++                }
++                let mut positional = positional.into_iter();
++                let ssid = positional.next().ok_or("missing Wi-Fi SSID")?;
++                let host = positional
+                     .next()
+                     .ok_or("missing Mac LAN IPv4 address")?
+                     .parse()?;
+-                let port = arguments
++                let port = positional
+                     .next()
+                     .map(|value| value.parse())
+                     .transpose()?
+                     .unwrap_or(easy_codex_host::lan_voice::LAN_AUDIO_PORT);
+-                require_no_more_arguments(&mut arguments, "provision-lan")?;
+-                return provision_keyboard_lan(ssid, host, port);
++                if positional.next().is_some() {
++                    return Err("too many arguments for provision-lan".into());
++                }
++                return provision_keyboard_lan(ssid, host, port, scene_name, preview_only);
++            }
++            "scenes-list" => {
++                require_no_more_arguments(&mut arguments, "scenes-list")?;
++                return list_scenes();
++            }
++            "hid-probe" => {
++                require_no_more_arguments(&mut arguments, "hid-probe")?;
++                return probe_hid_devices();
++            }
++            "hid-watch" => {
++                // 用法：hid-watch [秒数]
++                let seconds = arguments.next().map(|v| v.parse()).transpose()?.unwrap_or(8);
++                require_no_more_arguments(&mut arguments, "hid-watch")?;
++                return watch_hid_inputs(seconds);
+             }
+             "asr-import-model" => {
+                 let source = arguments.next().ok_or("missing model source path")?;
+@@ -190,6 +232,7 @@ fn home_paths() -> Result<AppPaths, Box<dyn std::error::Error>> {
+ 
+ fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
+     let paths = home_paths()?;
++    easy_codex_host::local_mode::load_env_file(&paths);
+     let daemon = HostDaemon::open(&paths)?;
+     let shutdown = Arc::new(AtomicBool::new(false));
+     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))?;
+@@ -238,6 +281,8 @@ fn provision_keyboard_lan(
+     ssid: String,
+     host: std::net::IpAddr,
+     port: u16,
++    scene_name: Option<String>,
++    preview_only: bool,
+ ) -> Result<(), Box<dyn std::error::Error>> {
+     use std::io::Read;
+ 
+@@ -249,6 +294,46 @@ fn provision_keyboard_lan(
+     let paths = home_paths()?;
+     let device_secret = load_or_create_device_secret(&paths)?;
+     let config = LanProvisioning::new(ssid, password, host, port, device_secret)?;
++    apply_and_finish(config, scene_name, preview_only)
++}
++
++/// 只下发键位，不写 Wi-Fi / 语音端点。摩斯电码练习机这类纯键盘场景用它，
++/// 好处是不用向用户索取 Wi-Fi 密码，板子也不会去连网。
++fn provision_keyboard_offline(
++    scene_name: Option<String>,
++    preview_only: bool,
++) -> Result<(), Box<dyn std::error::Error>> {
++    let paths = home_paths()?;
++    let device_secret = load_or_create_device_secret(&paths)?;
++    println!("mode=offline（只下发键位，不改 Wi-Fi/语音）");
++    let config = LanProvisioning::offline(device_secret)?;
++    apply_and_finish(config, scene_name, preview_only)
++}
++
++fn apply_and_finish(
++    mut config: LanProvisioning,
++    scene_name: Option<String>,
++    preview_only: bool,
++) -> Result<(), Box<dyn std::error::Error>> {
++    if let Some(name) = scene_name.as_deref() {
++        let scene = Scene::load_by_name(&Scene::default_directory(), name)?;
++        println!("scene={} ({})", scene.id, scene.name);
++        config = config.with_scene(scene);
++    } else {
++        println!(
++            "scene={} ({}，未指定 --scene)",
++            config.scene().id,
++            config.scene().name
++        );
++    }
++    if preview_only {
++        // 先看清楚要写什么，再决定要不要动板子。
++        let preview = config.preview_json()?;
++        println!("payload_bytes={}", preview.len());
++        println!("{preview}");
++        println!("status=preview_only（未下发）");
++        return Ok(());
++    }
+     let receipt = provision_lan(&config)?;
+     println!("status=provisioned");
+     println!("transport={}", receipt.transport);
+@@ -259,6 +344,75 @@ fn provision_keyboard_lan(
+     Ok(())
+ }
+ 
++fn probe_hid_devices() -> Result<(), Box<dyn std::error::Error>> {
++    let devices = easy_codex_host::provisioning::probe_devices()?;
++    if devices.is_empty() {
++        println!("status=no_device");
++        println!("（没有找到可下发的键盘接口：确认板子已连上蓝牙，或已插 USB）");
++        return Ok(());
++    }
++    println!("status=found count={}", devices.len());
++    for device in devices {
++        println!("  {device}");
++    }
++    Ok(())
++}
++
++fn watch_hid_inputs(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
++    println!("status=watching seconds={seconds}");
++    println!("（现在按住板子的 KEY1，应该能看到空格键的键码涌出来）");
++    let lines = easy_codex_host::provisioning::watch_inputs(seconds)?;
++    if lines.is_empty() {
++        println!("status=no_input");
++        println!("（一条输入报告都没收到：蓝牙 HID 的输入通道没通，或没有按键）");
++        return Ok(());
++    }
++    println!("status=received count={}", lines.len());
++    for line in lines.iter().take(80) {
++        println!("  {line}");
++    }
++    Ok(())
++}
++
++fn list_scenes() -> Result<(), Box<dyn std::error::Error>> {
++    let directory = Scene::default_directory();
++    println!("directory={}", directory.display());
++    let entries = std::fs::read_dir(&directory)
++        .map_err(|error| format!("cannot read scene directory: {error}"))?;
++    let mut rows: Vec<String> = Vec::new();
++    for entry in entries.flatten() {
++        let path = entry.path();
++        if path.extension().and_then(|value| value.to_str()) != Some("json") {
++            continue;
++        }
++        match Scene::load(&path) {
++            Ok(scene) => {
++                let text_keys = scene
++                    .keys
++                    .iter()
++                    .filter(|(_, action)| action.get("text").is_some())
++                    .count();
++                rows.push(format!(
++                    "  {:<10} {:<8} 文本键 {} / 共 {}",
++                    scene.id,
++                    scene.name,
++                    text_keys,
++                    scene.keys.len()
++                ));
++            }
++            Err(error) => rows.push(format!(
++                "  {}  解析失败：{error}",
++                path.display()
++            )),
++        }
++    }
++    rows.sort();
++    for row in rows {
++        println!("{row}");
++    }
++    Ok(())
++}
++
+ fn import_asr_model(source: &Path) -> Result<(), Box<dyn std::error::Error>> {
+     let paths = home_paths()?;
+     paths.prepare()?;
+@@ -273,15 +427,36 @@ fn import_asr_model(source: &Path) -> Result<(), Box<dyn std::error::Error>> {
+ fn print_asr_status() -> Result<(), Box<dyn std::error::Error>> {
+     let paths = home_paths()?;
+     paths.prepare()?;
++    easy_codex_host::local_mode::load_env_file(&paths);
+     let import_lock = ImportLock::acquire(&paths.runtime_directory.join("key-import.lock"))?;
+     let accounts = KeychainAccounts::load_or_create(&paths.installation_id, &import_lock)?;
+     let env = DashScopeEnvStore::new(paths.dashscope_env.clone(), &accounts);
+     let qwen_ready = dashscope_key_is_installed(&env, &accounts)?;
+     let config = WhisperCppConfig::from_paths(&paths);
+-    println!("status={}", if qwen_ready { "ready" } else { "missing" });
+-    println!("provider=dashscope");
+-    println!("model={ASR_MODEL}");
+-    println!("region=cn-beijing");
++    let local = easy_codex_host::local_mode::enabled();
++    let status = if local || qwen_ready {
++        "ready"
++    } else {
++        "missing"
++    };
++    println!("status={status}");
++    println!(
++        "provider={}",
++        if local { "local-whisper" } else { "dashscope" }
++    );
++    println!(
++        "model={}",
++        if local {
++            easy_codex_host::local_mode::LOCAL_ASR_MODEL
++        } else {
++            ASR_MODEL
++        }
++    );
++    if local {
++        println!("region=local");
++    } else {
++        println!("region=cn-beijing");
++    }
+     println!(
+         "fallback_executable_present={}",
+         config.executable.is_file()
+@@ -328,18 +503,28 @@ fn summarize_slot(slot: u8) -> Result<(), Box<dyn std::error::Error>> {
+         CacheLimits::default(),
+     )?;
+     let dashscope_env = DashScopeEnvStore::new(paths.dashscope_env.clone(), &accounts);
+-    if !dashscope_key_is_installed(&dashscope_env, &accounts)? {
++    let local = easy_codex_host::local_mode::enabled();
++    if !local && !dashscope_key_is_installed(&dashscope_env, &accounts)? {
+         return Err("DashScope API key is not configured".into());
+     }
+-    let spark = SparkRunner::new(SparkRunnerConfig::default());
+-    let tts_client = DashScopeTtsClient::default();
+-    let tts = DashScopeSummarySynthesizer {
+-        client: &tts_client,
+-        secrets: &dashscope_env,
+-        accounts: &accounts,
+-    };
+     let request_id = format!("manual-{}", uuid::Uuid::new_v4());
+-    let outcome = {
++    let outcome = if local {
++        let generator = easy_codex_host::local_mode::FixedReminderGenerator;
++        let synthesizer = easy_codex_host::local_mode::SaySynthesizer;
++        let mut orchestrator =
++            SummaryOrchestrator::new(&mut state, &cache, &generator, &synthesizer);
++        match orchestrator.resume(&binding.task_id)? {
++            SummaryRunOutcome::Idle => orchestrator.run(&binding.task_id, &request_id)?,
++            resumed => resumed,
++        }
++    } else {
++        let spark = SparkRunner::new(SparkRunnerConfig::default());
++        let tts_client = DashScopeTtsClient::default();
++        let tts = DashScopeSummarySynthesizer {
++            client: &tts_client,
++            secrets: &dashscope_env,
++            accounts: &accounts,
++        };
+         let mut orchestrator = SummaryOrchestrator::new(&mut state, &cache, &spark, &tts);
+         match orchestrator.resume(&binding.task_id)? {
+             SummaryRunOutcome::Idle => orchestrator.run(&binding.task_id, &request_id)?,
+@@ -459,6 +644,17 @@ fn dashscope_status() -> Result<(), Box<dyn std::error::Error>> {
+     let home = std::env::var_os("HOME").ok_or("HOME is unavailable")?;
+     let paths = AppPaths::from_home(std::path::Path::new(&home));
+     paths.prepare()?;
++    easy_codex_host::local_mode::load_env_file(&paths);
++    if easy_codex_host::local_mode::enabled() {
++        // Local mode replaces every DashScope call: whisper.cpp for ASR and
++        // macOS `say` for TTS. Report the local provider as configured so the
++        // Part A acceptance check has a stable signal.
++        println!("status=configured");
++        println!("provider=local");
++        println!("asr_model={}", easy_codex_host::local_mode::LOCAL_ASR_MODEL);
++        println!("tts_model={}", easy_codex_host::local_mode::LOCAL_TTS_MODEL);
++        return Ok(());
++    }
+     let import_lock = ImportLock::acquire(&paths.runtime_directory.join("key-import.lock"))?;
+     let accounts = KeychainAccounts::load_or_create(&paths.installation_id, &import_lock)?;
+     let env = DashScopeEnvStore::new(paths.dashscope_env, &accounts);
+diff --git a/app/host/src/provisioning.rs b/app/host/src/provisioning.rs
+index 0415d45..4ebcf14 100644
+--- a/app/host/src/provisioning.rs
++++ b/app/host/src/provisioning.rs
+@@ -1,14 +1,16 @@
++use std::collections::BTreeMap;
+ use std::fs;
+ use std::io::Read;
+ use std::net::{IpAddr, Ipv4Addr};
+ use std::os::unix::fs::{MetadataExt, PermissionsExt};
+-use std::path::Path;
++use std::path::{Path, PathBuf};
+ #[cfg(target_os = "macos")]
+ use std::thread;
+ #[cfg(target_os = "macos")]
+ use std::time::{Duration, Instant};
+ 
+ use serde::Serialize;
++use serde_json::Value;
+ use thiserror::Error;
+ use zeroize::Zeroize;
+ 
+@@ -59,6 +61,12 @@ pub enum ProvisioningError {
+     HidAck,
+     #[error("HID provisioning is currently supported only on macOS")]
+     UnsupportedPlatform,
++    #[error("scene file is missing or malformed")]
++    SceneFile,
++    #[error("scene file contains a key name other than KEY1..KEY8")]
++    UnknownSceneKey,
++    #[error("scene payload exceeds the device configuration limit")]
++    SceneTooLarge,
+ }
+ 
+ #[derive(Clone, PartialEq, Eq)]
+@@ -68,6 +76,10 @@ pub struct LanProvisioning {
+     host: Ipv4Addr,
+     port: u16,
+     device_secret: [u8; 32],
++    scene: Scene,
++    /// 是否把 Wi-Fi / 语音端点一起写进去。纯键盘场景（摩斯、速记）
++    /// 不需要联网，置 false 就只下发键位。
++    audio_enabled: bool,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -95,21 +107,153 @@ struct ProvisionPayload<'a> {
+ 
+ #[derive(Serialize)]
+ struct Profile {
+-    id: &'static str,
+-    keys: std::collections::BTreeMap<&'static str, Key>,
++    id: String,
++    keys: BTreeMap<String, Key>,
+     encoder: Encoder,
+ }
+ 
+ #[derive(Serialize)]
+ struct Key {
+-    press: &'static str,
++    press: Value,
+ }
+ 
+ #[derive(Serialize)]
+ struct Encoder {
+-    left: &'static str,
+-    right: &'static str,
+-    press: &'static str,
++    left: Value,
++    right: Value,
++    press: Value,
++}
++
++/// 一套「场景」= 一份完整键位表。固件只取 `profiles` 数组的第一个元素，
++/// 所以场景切换不是板内切换，而是换一份配置重新下发：
++/// 同一块板子，下发写作场景就是写作键盘，下发速记场景就是速记键盘。
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Scene {
++    pub id: String,
++    pub name: String,
++    pub keys: Vec<(String, Value)>,
++    pub encoder_left: Value,
++    pub encoder_right: Value,
++    pub encoder_press: Value,
++}
++
++const SCENE_KEY_NAMES: [&str; 8] = [
++    "KEY1", "KEY2", "KEY3", "KEY4", "KEY5", "KEY6", "KEY7", "KEY8",
++];
++
++impl Scene {
++    /// 出厂键位：与固件 `DefaultKeymap()` 一致，用作安全回退。
++    pub fn factory_default() -> Self {
++        let keys = vec![
++            ("KEY1".to_string(), Value::from("voice_ptt_hold")),
++            ("KEY2".to_string(), Value::from("hotkey:Return")),
++            ("KEY3".to_string(), Value::from("edit_ptt_hold")),
++            ("KEY4".to_string(), Value::from("hotkey:Backspace")),
++            ("KEY5".to_string(), Value::from("select_all")),
++            ("KEY6".to_string(), Value::from("copy")),
++            ("KEY7".to_string(), Value::from("paste")),
++            ("KEY8".to_string(), Value::from("undo")),
++        ];
++        Self {
++            id: "factory".to_string(),
++            name: "出厂键位".to_string(),
++            keys,
++            encoder_left: Value::from("disabled"),
++            encoder_right: Value::from("disabled"),
++            encoder_press: Value::from("scroll_axis_toggle"),
++        }
++    }
++
++    /// 从场景文件加载。文件格式见 `scenes/*.json`。
++    pub fn load(path: &Path) -> Result<Self, ProvisioningError> {
++        let raw = fs::read_to_string(path).map_err(|_| ProvisioningError::SceneFile)?;
++        let doc: Value = serde_json::from_str(&raw).map_err(|_| ProvisioningError::SceneFile)?;
++        let id = doc
++            .get("id")
++            .and_then(Value::as_str)
++            .ok_or(ProvisioningError::SceneFile)?
++            .to_string();
++        let name = doc
++            .get("name")
++            .and_then(Value::as_str)
++            .unwrap_or(&id)
++            .to_string();
++        let keys_doc = doc
++            .get("keys")
++            .and_then(Value::as_object)
++            .ok_or(ProvisioningError::SceneFile)?;
++        let mut keys = Vec::with_capacity(SCENE_KEY_NAMES.len());
++        for key_name in SCENE_KEY_NAMES {
++            let action = keys_doc
++                .get(key_name)
++                .ok_or(ProvisioningError::SceneFile)?;
++            keys.push((key_name.to_string(), normalize_action(action)?));
++        }
++        // 白名单校验：键名只能出现 KEY1..KEY8，避免写出永远不会生效的配置。
++        for key in keys_doc.keys() {
++            if !SCENE_KEY_NAMES.contains(&key.as_str()) {
++                return Err(ProvisioningError::UnknownSceneKey);
++            }
++        }
++        let encoder = doc
++            .get("encoder")
++            .and_then(Value::as_object)
++            .ok_or(ProvisioningError::SceneFile)?;
++        let read_encoder = |field: &str| -> Result<Value, ProvisioningError> {
++            let action = encoder.get(field).ok_or(ProvisioningError::SceneFile)?;
++            normalize_action(action)
++        };
++        Ok(Self {
++            id,
++            name,
++            keys,
++            encoder_left: read_encoder("left")?,
++            encoder_right: read_encoder("right")?,
++            encoder_press: read_encoder("press")?,
++        })
++    }
++
++    pub fn load_by_name(directory: &Path, name: &str) -> Result<Self, ProvisioningError> {
++        Self::load(&directory.join(format!("{name}.json")))
++    }
++
++    /// 场景目录：`app/host/scenes`（源码树）或安装目录下的 `scenes`。
++    pub fn default_directory() -> PathBuf {
++        if let Ok(dir) = std::env::var("EASY_CODEX_SCENES_DIR") {
++            return PathBuf::from(dir);
++        }
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scenes")
++    }
++}
++
++/// 把场景文件里的简写动作统一成固件认识的形态。
++///
++/// - `"voice_ptt_hold"` → `"voice_ptt_hold"`
++/// - `"hotkey:Return"` → `{"hotkey": "Return"}`
++/// - `{"text": "【结论】"}` → 原样透传
++fn normalize_action(action: &Value) -> Result<Value, ProvisioningError> {
++    match action {
++        Value::String(text) => {
++            if let Some(hotkey) = text.strip_prefix("hotkey:") {
++                if hotkey.is_empty() {
++                    return Err(ProvisioningError::SceneFile);
++                }
++                let mut object = serde_json::Map::new();
++                object.insert("hotkey".to_string(), Value::from(hotkey));
++                Ok(Value::Object(object))
++            } else {
++                Ok(Value::String(text.clone()))
++            }
++        }
++        Value::Object(object) => {
++            if object.contains_key("hotkey") || object.contains_key("text") {
++                Ok(action.clone())
++            } else {
++                Err(ProvisioningError::SceneFile)
++            }
++        }
++        _ => Err(ProvisioningError::SceneFile),
++    }
+ }
+ 
+ impl LanProvisioning {
+@@ -149,9 +293,44 @@ impl LanProvisioning {
+             host,
+             port,
+             device_secret,
++            scene: Scene::factory_default(),
++            audio_enabled: true,
++        })
++    }
++
++    /// 离线模式：只下发键位，不碰 Wi-Fi 和语音端点。
++    ///
++    /// 固件里的 `audio_enabled()` 是由「ssid 非空 && audio_host 非空 &&
++    /// 端口合法」推导出来的（`config_state.cpp`），所以把 ssid 和 host
++    /// 留空就是固件本来就支持的「纯键盘」状态，不是绕过校验。
++    /// 摩斯电码练习机这类场景压根不需要联网，因此不必向用户索取 Wi-Fi 密码。
++    pub fn offline(device_secret: [u8; 32]) -> Result<Self, ProvisioningError> {
++        if device_secret.iter().all(|byte| *byte == 0) {
++            return Err(ProvisioningError::InvalidPayload);
++        }
++        Ok(Self {
++            ssid: String::new(),
++            password: String::new(),
++            host: Ipv4Addr::UNSPECIFIED,
++            // 端口仍要给合法值：固件对 audio_port 有 1024..=65535 的硬校验，
++            // 写 0 会让整份配置被判定为 InvalidJson。
++            port: crate::lan_voice::LAN_AUDIO_PORT,
++            device_secret,
++            scene: Scene::factory_default(),
++            audio_enabled: false,
+         })
+     }
+ 
++    /// 换上一套场景键位。默认是出厂键位，可用这个替换成任意场景。
++    pub fn with_scene(mut self, scene: Scene) -> Self {
++        self.scene = scene;
++        self
++    }
++
++    pub fn scene(&self) -> &Scene {
++        &self.scene
++    }
++
+     pub fn payload_json(&self) -> Result<Vec<u8>, ProvisioningError> {
+         let keys = (1..=8)
+             .map(|slot| {
+@@ -165,7 +344,15 @@ impl LanProvisioning {
+                     7 => "KEY7",
+                     _ => "KEY8",
+                 };
+-                (name, Key { press: "disabled" })
++                // 键位来自场景表，不再写死 disabled。
++                let action = self
++                    .scene
++                    .keys
++                    .iter()
++                    .find(|(key, _)| key == name)
++                    .map(|(_, action)| action.clone())
++                    .unwrap_or_else(|| Value::from("disabled"));
++                (name.to_string(), Key { press: action })
+             })
+             .collect();
+         let payload = ProvisionPayload {
+@@ -173,28 +360,51 @@ impl LanProvisioning {
+             device_name: "Easy Codex Input",
+             wifi_ssid: &self.ssid,
+             wifi_password: &self.password,
+-            audio_host: self.host.to_string(),
++            // 离线模式下发空串：固件据此推导出 audio_enabled=false，
++            // 板子在这份配置下就是一块纯蓝牙键盘。
++            audio_host: if self.audio_enabled {
++                self.host.to_string()
++            } else {
++                String::new()
++            },
+             audio_port: self.port,
+-            audio_enabled: true,
++            audio_enabled: self.audio_enabled,
+             speaker_sync_key: hex_encode(&self.device_secret),
+             speaker_sync_key_epoch: 1,
++            // 固件只取 profiles[0]，所以一次下发就是一个场景。
+             profiles: vec![Profile {
+-                id: "default",
++                id: self.scene.id.clone(),
+                 keys,
+                 encoder: Encoder {
+-                    left: "disabled",
+-                    right: "disabled",
+-                    press: "disabled",
++                    left: self.scene.encoder_left.clone(),
++                    right: self.scene.encoder_right.clone(),
++                    press: self.scene.encoder_press.clone(),
+                 },
+             }],
+         };
+         let json = serde_json::to_vec(&payload).map_err(|_| ProvisioningError::InvalidPayload)?;
+-        if json.is_empty() || json.len() > MAX_CONFIG_BYTES {
++        if json.is_empty() {
+             return Err(ProvisioningError::InvalidPayload);
+         }
++        if json.len() > MAX_CONFIG_BYTES {
++            return Err(ProvisioningError::SceneTooLarge);
++        }
+         Ok(json)
+     }
+ 
++    /// 打印将要对板子下发的配置（不下发），用来先核对再动手。
++    pub fn preview_json(&self) -> Result<String, ProvisioningError> {
++        let payload = self.payload_json()?;
++        let text = String::from_utf8_lossy(&payload);
++        // 密码为空时不能直接 replace：空串会在每个字符之间插入 "***"。
++        let redacted = if self.password.is_empty() {
++            text.into_owned()
++        } else {
++            text.replace(&self.password, "***")
++        };
++        Ok(redacted)
++    }
++
+     pub fn reports(&self) -> Result<Vec<[u8; REPORT_BYTES]>, ProvisioningError> {
+         encode_reports(&self.payload_json()?)
+     }
+@@ -327,6 +537,114 @@ fn is_easy_input_usb_interface(vendor_id: u16, product_id: u16, interface: i32)
+         && (interface == EASY_INPUT_USB_INTERFACE || (cfg!(target_os = "macos") && interface == -1))
+ }
+ 
++/// 只读监听：把板子发上来的 HID 输入报告原样打出来。
++///
++/// 用途有两个：
++/// 1. 排查「为什么下发没收到 ACK」——ACK 是一条输入报告，如果一条都读不到，
++///    说明是蓝牙 HID 的输入通道没通，而不是固件拒绝。
++/// 2. 验证键位真的生效了——按住 KEY1 应该看到空格键的键码。
++pub fn watch_inputs(seconds: u64) -> Result<Vec<String>, ProvisioningError> {
++    #[cfg(target_os = "macos")]
++    {
++        let api = hidapi::HidApi::new().map_err(|_| ProvisioningError::Hid)?;
++        api.set_open_exclusive(false);
++        let mut opened = Vec::new();
++        let mut lines = Vec::new();
++        for candidate in api.device_list() {
++            if !is_easy_input_usb_interface(
++                candidate.vendor_id(),
++                candidate.product_id(),
++                candidate.interface_number(),
++            ) {
++                continue;
++            }
++            let tag = format!(
++                "iface={} usage_page=0x{:04X} usage=0x{:04X}",
++                candidate.interface_number(),
++                candidate.usage_page(),
++                candidate.usage()
++            );
++            match candidate.open_device(&api) {
++                Ok(device) => {
++                    lines.push(format!("opened {tag}"));
++                    opened.push((tag, device));
++                }
++                // macOS 会把键盘集合当成受保护设备，非受信任进程拿不到
++                // 句柄。这里必须把失败原因打出来，否则「0 帧」到底是没发
++                // 还是没权限读，永远分不清。
++                Err(error) => lines.push(format!("open_failed {tag} err={error}")),
++            }
++        }
++        if opened.is_empty() {
++            return Err(ProvisioningError::DeviceNotFound);
++        }
++        let deadline = Instant::now() + Duration::from_secs(seconds);
++        let mut report = [0_u8; REPORT_BYTES];
++        while Instant::now() < deadline {
++            let remaining = deadline.saturating_duration_since(Instant::now());
++            let wait_ms = remaining.as_millis().clamp(1, 200) as i32;
++            for (tag, device) in opened.iter() {
++                match device.read_timeout(&mut report, wait_ms) {
++                    Ok(0) => {}
++                    Ok(length) => {
++                        let hex = report[..length]
++                            .iter()
++                            .map(|byte| format!("{byte:02X}"))
++                            .collect::<Vec<_>>()
++                            .join(" ");
++                        lines.push(format!("{tag} len={length} [{hex}]"));
++                    }
++                    Err(error) => {
++                        lines.push(format!("{tag} read_failed err={error}"));
++                    }
++                }
++            }
++        }
++        Ok(lines)
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        let _ = seconds;
++        Err(ProvisioningError::UnsupportedPlatform)
++    }
++}
++
++/// 只读探测：列出当前能被下发的键盘接口（USB 与蓝牙 HID 都算）。
++/// 用来在下发前确认「板子到底在不在」，不做任何写入。
++pub fn probe_devices() -> Result<Vec<String>, ProvisioningError> {
++    #[cfg(target_os = "macos")]
++    {
++        let api = hidapi::HidApi::new().map_err(|_| ProvisioningError::Hid)?;
++        api.set_open_exclusive(false);
++        let mut found = Vec::new();
++        for device in api.device_list() {
++            // 这里刻意不按 interface 过滤：macOS 上一个复合 HID 设备会拆成
++            // 多个集合（键盘 / 鼠标 / 厂商通道），各自是独立的一条记录。
++            // 排查「按键没反应」时必须把每条都打出来，才知道键盘集合到底
++            // 有没有被系统开放给本进程。
++            if device.vendor_id() != EASY_INPUT_USB_VID
++                || device.product_id() != EASY_INPUT_USB_PID
++            {
++                continue;
++            }
++            found.push(format!(
++                "{} (VID=0x{:04X} PID=0x{:04X} iface={} usage_page=0x{:04X} usage=0x{:04X})",
++                device.product_string().unwrap_or("AI Keyboard"),
++                device.vendor_id(),
++                device.product_id(),
++                device.interface_number(),
++                device.usage_page(),
++                device.usage()
++            ));
++        }
++        Ok(found)
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        Err(ProvisioningError::UnsupportedPlatform)
++    }
++}
++
+ #[cfg(target_os = "macos")]
+ fn wait_for_config_ack(
+     device: &hidapi::HidDevice,
+@@ -485,7 +803,7 @@ mod tests {
+             "0707070707070707070707070707070707070707070707070707070707070707"
+         );
+         assert_eq!(value["speaker_sync_key_epoch"], 1);
+-        assert_eq!(value["profiles"][0]["keys"]["KEY1"]["press"], "disabled");
++        assert_eq!(value["profiles"][0]["keys"]["KEY1"]["press"], "voice_ptt_hold");
+     }
+ 
+     #[test]
+@@ -647,4 +965,117 @@ mod tests {
+         );
+         assert_eq!(fs::read(&target).unwrap(), b"do-not-touch");
+     }
++
++    #[test]
++    fn scene_file_reaches_the_device_payload() {
++        let temp = tempdir().unwrap();
++        let scene_path = temp.path().join("demo.json");
++        fs::write(
++            &scene_path,
++            r#"{
++              "id": "demo",
++              "name": "演示场景",
++              "keys": {
++                "KEY1": "voice_ptt_hold",
++                "KEY2": "hotkey:Cmd+Opt+1",
++                "KEY3": "paste_last",
++                "KEY4": {"text": "【结论】"},
++                "KEY5": "select_all",
++                "KEY6": "copy",
++                "KEY7": "paste",
++                "KEY8": "undo"
++              },
++              "encoder": {"left": "disabled", "right": "disabled", "press": "scroll_axis_toggle"}
++            }"#,
++        )
++        .unwrap();
++        let scene = Scene::load(&scene_path).unwrap();
++        assert_eq!(scene.id, "demo");
++        let config = LanProvisioning::new(
++            "Office WiFi".to_owned(),
++            "password".to_owned(),
++            "192.168.1.20".parse().unwrap(),
++            LAN_AUDIO_PORT,
++            [9; 32],
++        )
++        .unwrap()
++        .with_scene(scene);
++        let payload = config.payload_json().unwrap();
++        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
++        assert_eq!(value["profiles"][0]["id"], "demo");
++        assert_eq!(
++            value["profiles"][0]["keys"]["KEY2"]["press"]["hotkey"],
++            "Cmd+Opt+1"
++        );
++        assert_eq!(value["profiles"][0]["keys"]["KEY4"]["press"]["text"], "【结论】");
++        assert_eq!(value["profiles"][0]["encoder"]["press"], "scroll_axis_toggle");
++        assert!(value["profiles"][0]["keys"]["KEY1"]["press"] == "voice_ptt_hold");
++    }
++
++    #[test]
++    fn scene_rejects_unknown_key_names() {
++        let temp = tempdir().unwrap();
++        let scene_path = temp.path().join("bad.json");
++        fs::write(
++            &scene_path,
++            r#"{"id":"bad","keys":{
++                "KEY1":"voice_ptt_hold","KEY2":"paste_last","KEY3":"copy","KEY4":"paste",
++                "KEY5":"copy","KEY6":"copy","KEY7":"paste","KEY8":"undo","KEY9":"undo"},
++                "encoder":{"left":"disabled","right":"disabled","press":"disabled"}}"#,
++        )
++        .unwrap();
++        assert!(matches!(
++            Scene::load(&scene_path),
++            Err(ProvisioningError::UnknownSceneKey)
++        ));
++    }
++
++    #[test]
++    fn scene_preview_redacts_the_wifi_password() {
++        let config = LanProvisioning::new(
++            "Office WiFi".to_owned(),
++            "topsecret".to_owned(),
++            "192.168.1.20".parse().unwrap(),
++            LAN_AUDIO_PORT,
++            [4; 32],
++        )
++        .unwrap();
++        let preview = config.preview_json().unwrap();
++        assert!(!preview.contains("topsecret"));
++        assert!(preview.contains("***"));
++    }
++
++    #[test]
++    fn offline_payload_leaves_wifi_blank_so_audio_stays_off() {
++        // 固件用「ssid 非空 && audio_host 非空」推导 audio_enabled，
++        // 离线模式下这两项必须是空串，否则板子会去连一个不存在的网络。
++        let scene = Scene::load_by_name(&Scene::default_directory(), "morse").unwrap();
++        let config = LanProvisioning::offline([7; 32]).unwrap().with_scene(scene);
++        let payload = config.payload_json().unwrap();
++        let value: Value = serde_json::from_slice(&payload).unwrap();
++        assert_eq!(value["wifi_ssid"], "");
++        assert_eq!(value["wifi_password"], "");
++        assert_eq!(value["audio_host"], "");
++        assert_eq!(value["audio_enabled"], false);
++        // 端口仍须合法，否则固件整份配置判 InvalidJson。
++        let port = value["audio_port"].as_u64().unwrap();
++        assert!((1024..=65535).contains(&port));
++        // 键位照旧下发，并且仍然是单 profile（固件只读 profiles[0]）。
++        assert_eq!(value["profiles"][0]["id"], "morse");
++        // 场景文件里写的 "hotkey:space" 会被归一化成 {"hotkey":"space"}
++        assert_eq!(
++            value["profiles"][0]["keys"]["KEY1"]["press"]["hotkey"],
++            "space"
++        );
++    }
++
++    #[test]
++    fn offline_preview_with_empty_password_does_not_corrupt_the_json() {
++        // 空密码做 replace 会在每个字符之间插入 "***"，必须短路掉。
++        let config = LanProvisioning::offline([9; 32]).unwrap();
++        let preview = config.preview_json().unwrap();
++        assert!(preview.contains("\"schema\":\"ai_keyboard.v1\""));
++        assert!(!preview.contains("***"));
++        serde_json::from_str::<Value>(&preview).expect("preview 必须是合法 JSON");
++    }
+ }

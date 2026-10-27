@@ -1,0 +1,163 @@
+diff --git a/firmware/host_test/config_state_tests.cpp b/firmware/host_test/config_state_tests.cpp
+index 9217bfa..99d79f0 100644
+--- a/firmware/host_test/config_state_tests.cpp
++++ b/firmware/host_test/config_state_tests.cpp
+@@ -69,14 +69,18 @@ void starts_with_default_keymap() {
+   assert(state.ptt_hotkey() == "RightMeta");
+   assert(state.edit_ptt_hotkey() == "RightOption");
+   assert(state.ptt_mode() == PttMode::Toggle);
+-  assert(state.keymap().action_for(InputId::Key2).kind == ActionKind::Hotkey);
+-  assert(state.keymap().action_for(InputId::Key2).hotkey == "Return");
+-  assert(state.keymap().action_for(InputId::Key3).kind == ActionKind::EditPttHold);
+-  assert(state.keymap().action_for(InputId::Key4).kind == ActionKind::Hotkey);
+-  assert(state.keymap().action_for(InputId::Key4).hotkey == "Backspace");
+-  assert(state.keymap().action_for(InputId::Key5).kind == ActionKind::SelectAll);
+-  assert(state.keymap().action_for(InputId::Key6).kind == ActionKind::Copy);
+-  assert(state.keymap().action_for(InputId::Key7).kind == ActionKind::Paste);
++  // 固件默认键位随板子用途变化（本机是摩斯键位），所以这里跟 DefaultKeymap()
++  // 逐项对照，而不是写死某几个键的含义。
++  const auto expected = ai_keyboard::DefaultKeymap();
++  for (int i = 0; i < static_cast<int>(ai_keyboard::InputId::Count); ++i) {
++    const auto input = static_cast<ai_keyboard::InputId>(i);
++    assert(state.keymap().action_for(input).kind ==
++           expected.action_for(input).kind);
++    assert(state.keymap().action_for(input).hotkey ==
++           expected.action_for(input).hotkey);
++    assert(state.keymap().action_for(input).text ==
++           expected.action_for(input).text);
++  }
+ }
+ 
+ void applies_valid_payload() {
+diff --git a/firmware/host_test/keymap_tests.cpp b/firmware/host_test/keymap_tests.cpp
+index 7ac25d8..4ebddb3 100644
+--- a/firmware/host_test/keymap_tests.cpp
++++ b/firmware/host_test/keymap_tests.cpp
+@@ -9,9 +9,31 @@ using ai_keyboard::ActionKind;
+ using ai_keyboard::FirmwareEventKind;
+ using ai_keyboard::InputId;
+ 
+-void default_mapping_covers_all_keys_and_encoder() {
++void board_default_keymap_is_the_morse_layout() {
+   const auto keymap = ai_keyboard::DefaultKeymap();
+ 
++  // 发报键：按住 = 按下空格，时长决定点还是划。
++  assert(keymap.action_for(InputId::Key1).kind == ActionKind::Hotkey);
++  assert(keymap.action_for(InputId::Key1).hotkey == "Space");
++  assert(keymap.action_for(InputId::Key3).kind == ActionKind::Hotkey);
++  assert(keymap.action_for(InputId::Key3).hotkey == "Tab");
++  assert(keymap.action_for(InputId::Key4).kind == ActionKind::Hotkey);
++  assert(keymap.action_for(InputId::Key4).hotkey == "Backspace");
++  assert(keymap.action_for(InputId::Key5).kind == ActionKind::Hotkey);
++  assert(keymap.action_for(InputId::Key5).hotkey == "Enter");
++  // 其余一律关掉，练习时不能有误触。
++  assert(keymap.action_for(InputId::Key2).kind == ActionKind::Disabled);
++  assert(keymap.action_for(InputId::Key6).kind == ActionKind::Disabled);
++  assert(keymap.action_for(InputId::Key7).kind == ActionKind::Disabled);
++  assert(keymap.action_for(InputId::Key8).kind == ActionKind::Disabled);
++  assert(keymap.action_for(InputId::EncoderLeft).kind == ActionKind::Disabled);
++  assert(keymap.action_for(InputId::EncoderRight).kind == ActionKind::Disabled);
++  assert(keymap.action_for(InputId::EncoderPress).kind == ActionKind::Disabled);
++}
++
++void upstream_mapping_covers_all_keys_and_encoder() {
++  const auto keymap = ai_keyboard::UpstreamDefaultKeymap();
++
+   assert(keymap.action_for(InputId::Key1).kind == ActionKind::VoicePttHold);
+   assert(keymap.action_for(InputId::Key2).kind == ActionKind::Hotkey);
+   assert(keymap.action_for(InputId::Key2).hotkey == "Return");
+@@ -28,7 +50,7 @@ void default_mapping_covers_all_keys_and_encoder() {
+ }
+ 
+ void voice_hold_actions_emit_press_and_release_events() {
+-  const auto keymap = ai_keyboard::DefaultKeymap();
++  const auto keymap = ai_keyboard::UpstreamDefaultKeymap();
+ 
+   const auto down = ai_keyboard::event_for_action(
+       keymap.action_for(InputId::Key1),
+@@ -50,7 +72,7 @@ void voice_hold_actions_emit_press_and_release_events() {
+ }
+ 
+ void edit_hold_actions_emit_edit_hotkey_events() {
+-  const auto keymap = ai_keyboard::DefaultKeymap();
++  const auto keymap = ai_keyboard::UpstreamDefaultKeymap();
+ 
+   const auto down = ai_keyboard::event_for_action(
+       keymap.action_for(InputId::Key3),
+@@ -126,7 +148,7 @@ void custom_hotkey_actions_emit_press_and_release_events() {
+ }
+ 
+ void semantic_actions_resolve_for_each_target_platform() {
+-  const auto keymap = ai_keyboard::DefaultKeymap();
++  const auto keymap = ai_keyboard::UpstreamDefaultKeymap();
+   const std::array<std::pair<InputId, const char*>, 4> mac{{
+       {InputId::Key5, "Meta+A"}, {InputId::Key6, "Meta+C"},
+       {InputId::Key7, "Meta+V"}, {InputId::Key8, "Meta+Z"},
+@@ -155,7 +177,7 @@ void semantic_actions_resolve_for_each_target_platform() {
+   }
+ }
+ 
+-void default_eight_keys_emit_exact_hid_for_both_platforms() {
++void board_default_keys_emit_exact_hid_for_both_platforms() {
+   struct ExpectedReport {
+     InputId input;
+     std::uint8_t mac_modifier;
+@@ -163,15 +185,12 @@ void default_eight_keys_emit_exact_hid_for_both_platforms() {
+     std::uint8_t windows_modifier;
+     std::uint8_t windows_keycode;
+   };
+-  const std::array<ExpectedReport, 8> expected{{
+-      {InputId::Key1, 0x80, 0x00, 0x03, 0x2C},
+-      {InputId::Key2, 0x00, 0x28, 0x00, 0x28},
+-      {InputId::Key3, 0x40, 0x00, 0x03, 0x08},
++  // 摩斯键位：空格 / Tab / Backspace / Enter，四个都不带修饰键。
++  const std::array<ExpectedReport, 4> expected{{
++      {InputId::Key1, 0x00, 0x2C, 0x00, 0x2C},
++      {InputId::Key3, 0x00, 0x2B, 0x00, 0x2B},
+       {InputId::Key4, 0x00, 0x2A, 0x00, 0x2A},
+-      {InputId::Key5, 0x08, 0x04, 0x01, 0x04},
+-      {InputId::Key6, 0x08, 0x06, 0x01, 0x06},
+-      {InputId::Key7, 0x08, 0x19, 0x01, 0x19},
+-      {InputId::Key8, 0x08, 0x1D, 0x01, 0x1D},
++      {InputId::Key5, 0x00, 0x28, 0x00, 0x28},
+   }};
+ 
+   ai_keyboard::ConfigState state;
+@@ -196,6 +215,19 @@ void default_eight_keys_emit_exact_hid_for_both_platforms() {
+                   ? item.windows_keycode
+                   : item.mac_keycode));
+     }
++    // 关掉的键不能产生任何事件，否则练习时会蹦出意外字符。
++    for (const auto input : {InputId::Key2, InputId::Key6, InputId::Key7,
++                             InputId::Key8, InputId::EncoderLeft,
++                             InputId::EncoderRight, InputId::EncoderPress}) {
++      const auto event = ai_keyboard::event_for_action(
++          state.keymap().action_for(input),
++          ai_keyboard::InputPhase::Pressed,
++          state.ptt_hotkey(),
++          state.edit_ptt_hotkey(),
++          state.target_platform());
++      assert(event.kind == FirmwareEventKind::None);
++      assert(event.value.empty());
++    }
+   }
+ }
+ 
+@@ -207,14 +239,15 @@ void this_hardware_revision_reports_audio_unavailable() {
+ }
+ 
+ int main() {
+-  default_mapping_covers_all_keys_and_encoder();
++  board_default_keymap_is_the_morse_layout();
++  upstream_mapping_covers_all_keys_and_encoder();
+   voice_hold_actions_emit_press_and_release_events();
+   edit_hold_actions_emit_edit_hotkey_events();
+   disabled_actions_emit_no_event();
+   fixed_text_actions_emit_text_event_on_press_only();
+   custom_hotkey_actions_emit_press_and_release_events();
+   semantic_actions_resolve_for_each_target_platform();
+-  default_eight_keys_emit_exact_hid_for_both_platforms();
++  board_default_keys_emit_exact_hid_for_both_platforms();
+   this_hardware_revision_reports_audio_unavailable();
+   return 0;
+ }

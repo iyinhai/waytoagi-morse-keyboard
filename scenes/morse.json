@@ -1,0 +1,20 @@
+{
+  "id": "morse",
+  "name": "摩斯电码",
+  "note": "把板子变成发报键：KEY1 按住=发点划，KEY4 删掉上一个字母，KEY3 换一个练习词，KEY5 提交。其余键留空避免误触。",
+  "keys": {
+    "KEY1": "hotkey:space",
+    "KEY2": "disabled",
+    "KEY3": "hotkey:tab",
+    "KEY4": "hotkey:backspace",
+    "KEY5": "hotkey:enter",
+    "KEY6": "disabled",
+    "KEY7": "disabled",
+    "KEY8": "disabled"
+  },
+  "encoder": {
+    "left": "disabled",
+    "right": "disabled",
+    "press": "disabled"
+  }
+}
